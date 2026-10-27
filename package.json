@@ -1,0 +1,17 @@
+{
+  "name": "@fantasticfugue/fughetta-cli",
+  "version": "0.1.0",
+  "description": "Fughetta command line client and checkout MCP server",
+  "license": "MPL-2.0",
+  "type": "module",
+  "bin": { "fug": "build/cli.js" },
+  "files": ["build/**/*.js", "build/**/*.d.ts", "LICENSE", "README.md"],
+  "engines": { "node": ">=22" },
+  "packageManager": "bun@1.4.4",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs"
+  },
+  "dependencies": { "ignore": "^7.0.5" },
+  "devDependencies": { "@types/node": "^22.0.0", "typescript": "^5.9.3" }
+}
