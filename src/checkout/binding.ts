@@ -9,6 +9,7 @@ export interface Binding {
     workspace: string;
     project: string;
     worldline: string;
+    version?: string;
 }
 
 export const stateDir = (root: string) => join(root, ".fughetta", "state");
@@ -33,6 +34,7 @@ export async function load(root: string): Promise<Binding> {
         workspace: value.workspace ?? "",
         project: value.project,
         worldline: value.worldline || "main",
+        ...(value.version ? { version: value.version } : {}),
     };
 }
 

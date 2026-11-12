@@ -22,8 +22,14 @@ export async function execute(
     note: (line: string) => void,
     sync: typeof push = push,
 ): Promise<Outcome> {
-    const sent = await sync(core, binding, root);
-    report(sent, note);
+    let version = typeof args.version === "string" && args.version ? args.version : binding.version;
+    let syncSeconds: number | undefined;
+    if (!version) {
+        const sent = await sync(core, binding, root);
+        report(sent, note);
+        version = sent.version;
+        syncSeconds = sent.client_sync_seconds;
+    }
     const id = `fug-${randomUUID()}`,
         progressToken = randomUUID();
     const controller = new AbortController();
@@ -53,13 +59,15 @@ export async function execute(
                     name: tool,
                     _meta: {
                         progressToken,
-                        "fughetta/client_sync_seconds": sent.client_sync_seconds,
+                        ...(syncSeconds === undefined
+                            ? {}
+                            : { "fughetta/client_sync_seconds": syncSeconds }),
                     },
                     arguments: {
                         ...args,
                         project: binding.project,
                         worldline: binding.worldline,
-                        version: sent.version,
+                        version,
                     },
                 },
             },

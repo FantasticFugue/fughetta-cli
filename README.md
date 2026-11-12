@@ -110,6 +110,35 @@ repeat the same operation ID and arguments to recover its receipt, even if heads
 have advanced. Use a new ID for another promotion. Run `fug push` afterward to
 synchronize the target checkout; local edits use the usual conflict recovery.
 
+Named checkpoints select a fixed server version:
+
+```sh
+fug worldline tag reviewed --version VERSION --operation-id review-1 --intent "Reviewed parser"
+fug worldline references
+fug worldline channel stable --version @reviewed --operation-id stable-1
+fug worldline channel stable --version NEXT_VERSION --expected reference:2 --operation-id stable-2
+fug worldline reference-history
+fug worldline receipt stable-2
+fug build debug --version @reviewed
+fug test debug --version @reviewed
+fug run app --version @reviewed
+fug worldline checkout @reviewed ../reviewed-copy
+```
+
+Tags are immutable. Moving a channel requires its current receipt from
+`references` as `--expected`. Repeat the same operation ID and arguments to
+recover a lost response. `--attestations FILE` on tag/channel reads an array of
+`{ "kind": "review", "receipt": "review-42", "conclusion": "Approved" }` records;
+`build` and `test` are also accepted kinds. The service records these as the
+caller's statements alongside the authenticated actor.
+
+`--version` on build/test/run resolves the selected server source without pushing
+the local directory. A checkpoint checkout records the resolved version in its
+binding and is read-only; those execution commands use its pinned source.
+`fug push` refuses a pinned checkout. To edit it, run `fug worldline fork NAME`
+there, then check out that new worldline in another directory. The alternate
+checkout spelling is `fug worldline checkout LINE NEW_DIRECTORY --version @TAG`.
+
 Worldline histories remain separate. Use `fug d-mail send --to RECIPIENT --file FILE`
 to exchange conclusions between branches.
 
@@ -184,11 +213,14 @@ while copies changed through an editor's old file handle remain available.
 | Core | `configurations`, `build`, `test`, `run`, `language` |
 | Project configuration | `project`, `save_project`, `effective`, `schema` |
 
-The proxy injects the bound project and removes it from tool schemas. `build`,
-`test`, `run`, and `language` work on the version the preceding send produced, so
-results always describe the files on disk. The agent edits local files using its
-own editor tools. Before `configurations`, `build`,
-`test`, `run`, and `language`, the proxy sends local changes.
+The proxy binds project and worldline to the checkout. `build`, `test`, `run`,
+and `language` expose an optional `version`, including names such as `@reviewed`.
+A supplied version takes precedence over the checkout's pinned version; either
+selection goes directly to the core without sending local changes. In a writable
+checkout without a selected version, the proxy sends local changes before
+`configurations`, `build`, `test`, `run`, and `language`; source tools use the
+version returned by that send. A pinned checkout also lists configurations
+without sending files. The agent edits local files with its own editor tools.
 If sending fails, the tool returns an error without running the remote call.
 Sync summaries and skipped or kept files go to stderr; stdout contains only MCP
 messages. Calls run concurrently, use separate remote request IDs, and forward

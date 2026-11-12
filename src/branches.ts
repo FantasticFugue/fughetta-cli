@@ -5,6 +5,7 @@ import { json, locked, save } from "./files.js";
 import { push, save as bind, stateDir, type Binding } from "./checkout/index.js";
 import { Refused, type Connection } from "./remote.js";
 import { worldline } from "./worldline.js";
+import { references, checkoutSnapshot } from "./checkpoints.js";
 
 interface Selection {
     from: string;
@@ -63,6 +64,71 @@ export async function branches(
     args: string[],
 ): Promise<unknown> {
     const [action, name, destination] = args;
+    const flags = (values: string[], allowed: string[]) => {
+        const out: Record<string, string> = {};
+        for (let i = 0; i < values.length; i += 2) {
+            const flag = values[i]!,
+                value = values[i + 1];
+            if (
+                !allowed.includes(flag) ||
+                !value ||
+                value.startsWith("--") ||
+                out[flag] !== undefined
+            )
+                throw new Refused("invalid_params", `Invalid or repeated option ${flag}`);
+            out[flag] = value;
+        }
+        return out;
+    };
+    if (action === "references" && args.length === 1)
+        return { references: await references(core, binding) };
+    if (action === "reference-history") {
+        const options = flags(args.slice(1), ["--after"]);
+        const after = Number(options["--after"] ?? 0);
+        if (!Number.isSafeInteger(after) || after < 0)
+            throw new Refused("invalid_params", "--after needs a sequence number");
+        return worldline(core, binding, "reference_history", { after });
+    }
+    if (action === "receipt" && args.length === 2)
+        return worldline(core, binding, "receipt", { operation_id: name });
+    if (action === "tag" || action === "channel") {
+        const options = flags(args.slice(2), [
+            "--version",
+            "--operation-id",
+            "--intent",
+            "--expected",
+            "--attestations",
+        ]);
+        if (!name || !options["--version"] || !options["--operation-id"])
+            throw new Refused(
+                "invalid_params",
+                "tag/channel needs NAME, --version and --operation-id",
+            );
+        const attestations = options["--attestations"]
+            ? await json<unknown>(resolve(options["--attestations"]), undefined)
+            : [];
+        if (!Array.isArray(attestations))
+            throw new Refused("invalid_params", "Attestations file must contain an array");
+        return worldline(core, binding, "reference", {
+            version: options["--version"],
+            operation_id: options["--operation-id"],
+            intent: options["--intent"],
+            reference: { name, kind: action, expected: options["--expected"] ?? "", attestations },
+        });
+    }
+    if (action === "checkout" && name && destination && (name.startsWith("@") || args.length > 3)) {
+        const options = flags(args.slice(3), ["--version"]);
+        const version = options["--version"] ?? (name.startsWith("@") ? name : undefined);
+        if (!version) throw new Refused("invalid_params", "checkout needs --version VERSION");
+        const target = resolve(destination),
+            inside = relative(root, target);
+        if (!inside || (!isAbsolute(inside) && inside !== ".." && !inside.startsWith(`..${sep}`)))
+            throw new Refused("invalid_params", "Choose a directory outside the current checkout");
+        const next = { ...binding, worldline: name.startsWith("@") ? binding.worldline : name };
+        const pinned = await checkoutSnapshot(core, next, target, version);
+        await bind(target, { ...next, version: pinned });
+        return { directory: target, worldline: next.worldline, version: pinned, read_only: true };
+    }
     if (action === "list" && args.length === 1) return await worldline(core, binding, "list");
     if (!name || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(name))
         throw new Refused(
@@ -126,7 +192,9 @@ export async function branches(
             async () => {
                 let draft = await json<Fork | undefined>(file, undefined);
                 if (!draft) {
-                    const synced = await push(core, binding, root);
+                    const synced = binding.version
+                        ? { version: binding.version, deferred: [] }
+                        : await push(core, binding, root);
                     if (synced.deferred?.length)
                         throw new Refused(
                             "conflict",
@@ -157,7 +225,7 @@ export async function branches(
             inside = relative(root, target);
         if (!inside || (!isAbsolute(inside) && inside !== ".." && !inside.startsWith(`..${sep}`)))
             throw new Refused("invalid_params", "Choose a directory outside the current checkout");
-        const next = { ...binding, worldline: name };
+        const next = { ...binding, worldline: name, version: undefined };
         await worldline(core, next, "inspect");
         // A new directory keeps existing working copies and their pending operations intact.
         await mkdir(target);
