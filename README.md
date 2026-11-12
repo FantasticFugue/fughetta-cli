@@ -56,12 +56,21 @@ Node and CLI paths. Install `fug` on PATH and rerun `init` before sharing that f
 
 ## Commands
 
+Local synchronization time is measured during checkout scanning, upload and writeback, excluding time waiting for the push lock. `push --json` returns `client_sync_seconds`; execution calls send it as `fughetta/client_sync_seconds` in MCP `_meta`, and results return it only in `timings.client_sync_seconds`. The service records this client-reported value beside its queue, dependency, worker sync and execution times for Insights. Human-readable execution results show the measured stages, including the worker total and its environment preparation and commands/analysis sub-stages.
+
+`fug status`, `push`, `build`, `test`, `run`, `language`, `resolve`, and `clean` accept `--text` (the default) or `--json`. `worldline` and `d-mail` accept both switches and default to JSON; `help` also accepts both. Choose one output mode. JSON errors contain `code` and `message` on stderr; service refusals preserve their business code (such as `scope_locked` or `stale_frontier`), while local failures use categories such as `context_required`, `unauthenticated`, `invalid_params`, `missing_objects`, `permission_denied`, `conflict`, `connection_failed`, and `timeout`. HTTP errors without a business code use `http_STATUS`; unexpected failures use `internal_error`. Progress remains on stderr. Exit status is 0 for success, 1 for failure, 2 for an unknown command, and 130 for a cancelled execution.
+
 | Command | Purpose |
 | --- | --- |
 | `fug init [--server URL] [--workspace NAME] [--name PROJECT] [--token TOKEN]` | Bind, configure, send files, and register MCP |
 | `fug login [--server URL] [--workspace NAME] [--token TOKEN]` | Sign in and save a token for an origin |
 | `fug push` | Send local changes to the bound project |
-| `fug status` | Show the binding, check access, and list build configurations |
+| `fug status` | Show the binding, cache use, pending recovery, and available build configurations |
+| `fug resolve` | List synchronization recovery copies and recovery guidance |
+| `fug clean` | Remove old delivered logs and artifacts |
+| `fug build [CONFIGURATION ...]` | Synchronize and build on workspace workers |
+| `fug test [CONFIGURATION ...]` | Synchronize and run remote tests |
+| `fug run CONFIGURATION` | Synchronize and execute a saved run configuration |
 | `fug mcp` | Serve newline-delimited MCP JSON on stdin/stdout |
 | `fug worker [install] [--server URL] [--workspace NAME] [--name MACHINE] [--parallel N] [--service PATH] [--token TOKEN]` | Serve the workspace's builds on this machine; `install` keeps it running as a systemd user service |
 | `fug worker uninstall [--server URL] --workspace NAME` | Remove that service |
@@ -192,6 +201,10 @@ polling is needed. Language queries prepare missing or stale analysis automatica
 Mozilla Public License 2.0. See [LICENSE](LICENSE).
 
 ## Sync recovery files
+
+`fug status` shows local cache sizes and pending recovery even without a token or server connection. Remote lookup failures appear as `Remote status unavailable` in text or `remote_error` in JSON; unavailable `build_configurations` are omitted. Local inspection succeeds with exit status 0. `fug resolve --json` lists each saved copy with its original path, version where available, and recovery guidance. After recovering your edits, remove the saved copies you no longer need.
+
+`fug clean` removes delivered logs and downloaded artifacts older than ten minutes. Active deliveries, recent files, source blobs, and recovery copies stay. It reports freed bytes and remaining report/artifact sizes; `--json` returns those values as numbers.
 
 The baseline stores file metadata and observed versions; immutable file bytes are
 kept by digest in `.fughetta/state/blobs/`. Unchanged files are not downloaded
