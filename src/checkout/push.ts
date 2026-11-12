@@ -724,6 +724,10 @@ async function writeback(
 }
 
 export async function push(core: Connection, binding: Binding, root: string): Promise<Pushed> {
+    if (binding.version)
+        throw new Error(
+            "This checkout is pinned to a source version; fork a worldline to publish edits",
+        );
     return locked(
         join(stateDir(root), "push"),
         async () => {

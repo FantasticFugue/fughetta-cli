@@ -10,12 +10,12 @@ const routes: Record<string, [string, boolean]> = Object.fromEntries([
     ...["configurations", "build", "test", "run", "language"].map((n) => [n, ["/mcp", true]]),
     ...["project", "save_project", "effective", "schema"].map((n) => [n, ["/mcp/config", false]]),
 ]);
-// Tools that read a worldline version build exactly what the push before them sent.
+// Source tools use the requested version, the checkout pin, or the completed push.
 const pinned = new Set(["build", "test", "run", "language"]);
 // The binding decides these, so the agent never sees them.
-const bound = new Set(["project", "worldline", "version"]);
+const bound = new Set(["project", "worldline"]);
 const instructions =
-    "These tools build, test, run and analyze the project in this directory on a Fughetta core. Edit files on disk with your own tools; changes are sent before source-reading calls. Files ignored by .gitignore or .fughettaignore are not sent. Tools take no project argument. Start with configurations. When it lists none, or none that fits, read the repository, then use schema, project and save_project to set up builds, tests and analysis. Long calls return their final result and stream progress while running. Cancel a call with notifications/cancelled.";
+    "These tools build, test, run and analyze the project in this directory on a Fughetta core. Edit files on disk with your own tools; changes are sent before source-reading calls unless a version is supplied or the checkout has a pinned version. Build, test, run and language accept a version or @tag; this selection overrides the checkout pin. Files ignored by .gitignore or .fughettaignore are not sent. Tools take no project argument. Start with configurations. When it lists none, or none that fits, read the repository, then use schema, project and save_project to set up builds, tests and analysis. Long calls return their final result and stream progress while running. Cancel a call with notifications/cancelled.";
 
 export function unbound(value: unknown): unknown {
     if (Array.isArray(value)) return value.map(unbound);
@@ -154,7 +154,7 @@ export class Proxy {
                     return;
                 }
                 const [path, sources] = route;
-                const args = {
+                const args: Record<string, unknown> = {
                     ...(p.arguments as Record<string, unknown> | undefined),
                     project: this.binding.project,
                 };
@@ -166,9 +166,13 @@ export class Proxy {
                 };
                 this.pending.set(key(id), forwarded);
                 const signal = forwarded.controller.signal;
+                const selection =
+                    typeof args.version === "string" && args.version
+                        ? args.version
+                        : this.binding.version;
                 let synchronized: Pushed | undefined;
                 try {
-                    if (sources) {
+                    if (sources && !selection) {
                         const task = this.pushing.then(() => {
                             signal.throwIfAborted();
                             return this.sync({ ...this.core, signal }, this.binding, this.root);
@@ -185,11 +189,6 @@ export class Proxy {
                             });
                             report(sent, this.stderr);
                             synchronized = sent;
-                            if (pinned.has(p.name))
-                                Object.assign(args, {
-                                    worldline: this.binding.worldline,
-                                    version: sent.version,
-                                });
                         } catch (error) {
                             if (signal.aborted) throw error;
                             this.reply(id, {
@@ -204,6 +203,11 @@ export class Proxy {
                             return;
                         }
                     }
+                    if (pinned.has(p.name))
+                        Object.assign(args, {
+                            worldline: this.binding.worldline,
+                            version: selection ?? synchronized?.version,
+                        });
                     signal.throwIfAborted();
                     const progressToken = randomUUID();
                     let progress = 0;

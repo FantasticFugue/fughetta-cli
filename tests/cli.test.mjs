@@ -624,3 +624,135 @@ test("Worldline and d-mail render both modes and preserve refusal and local erro
         await rm(root, { recursive: true, force: true });
     }
 });
+
+test(
+    "named checkpoints select source, recover channel moves and create pinned checkouts",
+    { timeout: 120_000, skip: service },
+    async () => {
+        const server = await start("checkpoints");
+        const root = join(server.dir, "named"),
+            home = join(server.dir, "home");
+        const core = { server: server.origin, workspace: "", token: server.token };
+        const binding = {
+            server: core.server,
+            workspace: core.workspace,
+            project: "named",
+            worldline: "main",
+        };
+        try {
+            await mkdir(root);
+            await writeFile(join(root, "app.txt"), "reviewed source\n");
+            await writeFile(join(root, "tool.sh"), "#!/bin/sh\necho reviewed\n", { mode: 0o755 });
+            await writeFile(join(root, "image.bin"), Buffer.from([0, 255, 1]));
+            ok(await run(root, home, ["init", "--server", server.origin, "--token", server.token]));
+            const first = await worldline(core, binding, "inspect");
+            const attestations = join(server.dir, "review.json");
+            await writeFile(
+                attestations,
+                JSON.stringify([{ kind: "review", receipt: "review-42", conclusion: "Approved" }]),
+            );
+            const tagArgs = [
+                "worldline",
+                "tag",
+                "reviewed",
+                "--version",
+                first.version,
+                "--operation-id",
+                "tag-1",
+                "--attestations",
+                attestations,
+            ];
+            const tag = JSON.parse(ok(await run(root, home, tagArgs)));
+            assert.equal(tag.references[0].actor, "token:tester");
+            assert.equal(tag.references[0].attestations[0].conclusion, "Approved");
+            assert.equal(JSON.parse(ok(await run(root, home, tagArgs))).replayed, true);
+            const channel = JSON.parse(
+                ok(
+                    await run(root, home, [
+                        "worldline",
+                        "channel",
+                        "stable",
+                        "--version",
+                        "@reviewed",
+                        "--operation-id",
+                        "channel-1",
+                    ]),
+                ),
+            );
+            await writeFile(join(root, "app.txt"), "next source\n");
+            ok(await run(root, home, ["push"]));
+            const second = await worldline(core, binding, "inspect");
+            const moved = JSON.parse(
+                ok(
+                    await run(root, home, [
+                        "worldline",
+                        "channel",
+                        "stable",
+                        "--version",
+                        second.version,
+                        "--operation-id",
+                        "channel-2",
+                        "--expected",
+                        channel.receipt,
+                    ]),
+                ),
+            );
+            assert.equal(moved.references[0].previous, channel.receipt);
+            assert.equal(
+                (await worldline(core, binding, "read", { version: "@reviewed", path: "app.txt" }))
+                    .text,
+                "reviewed source\n",
+            );
+            const compared = await worldline(core, binding, "compare", {
+                observed: "@reviewed",
+                version: "stable",
+            });
+            assert.equal(compared.changes.length, 1);
+            assert.equal(compared.changes[0].after.path, "app.txt");
+            const history = await worldline(core, binding, "history", { version: "@reviewed" });
+            assert.equal(history.version, first.version);
+            const receipt = JSON.parse(
+                ok(await run(root, home, ["worldline", "receipt", "tag-1"])),
+            );
+            assert.equal(receipt.version, first.version);
+            const all = JSON.parse(ok(await run(root, home, ["worldline", "references"])));
+            assert.equal(all.references.length, 2);
+            const audit = JSON.parse(ok(await run(root, home, ["worldline", "reference-history"])));
+            assert.equal(audit.references.length, 3);
+            const destination = join(server.dir, "pinned");
+            const checkout = JSON.parse(
+                ok(await run(root, home, ["worldline", "checkout", "@reviewed", destination])),
+            );
+            assert.equal(checkout.version, first.version);
+            assert.equal(await readFile(join(destination, "app.txt"), "utf8"), "reviewed source\n");
+            assert.deepEqual(
+                await readFile(join(destination, "image.bin")),
+                Buffer.from([0, 255, 1]),
+            );
+            assert.ok((await stat(join(destination, "tool.sh"))).mode & 0o111);
+            assert.equal(
+                JSON.parse(await readFile(join(destination, ".fughetta/project.json"), "utf8"))
+                    .version,
+                first.version,
+            );
+            const refused = await run(destination, home, ["push"]);
+            assert.notEqual(refused.code, 0);
+            assert.match(refused.stderr, /pinned/);
+            const fork = JSON.parse(
+                ok(await run(destination, home, ["worldline", "fork", "review-fix"])),
+            );
+            assert.equal(
+                (
+                    await worldline(core, { ...binding, worldline: "review-fix" }, "read", {
+                        version: fork.version,
+                        path: "app.txt",
+                    })
+                ).text,
+                "reviewed source\n",
+            );
+            assert.equal((await worldline(core, binding, "inspect")).version, second.version);
+        } finally {
+            assert.equal(await server.stop(), 0);
+        }
+    },
+);

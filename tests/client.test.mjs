@@ -295,11 +295,12 @@ test("MCP request errors, push failure, reports, tool filtering and project inje
             tools.map((t) => t.name),
             ["build", "save_project", "schema"],
         );
-        for (const name of ["project", "worldline", "version"])
+        for (const name of ["project", "worldline"])
             assert.ok(!JSON.stringify(tools).includes(`"${name}"`));
+        assert.ok(Object.hasOwn(tools[0].inputSchema.properties, "version"));
         await send(3, "tools/call", {
             name: "build",
-            arguments: { project: "wrong", version: "old" },
+            arguments: { project: "wrong" },
         });
         assert.deepEqual(
             requests.at(-1).params.arguments,
@@ -348,6 +349,65 @@ test("MCP request errors, push failure, reports, tool filtering and project inje
         assert.match(answers.at(-1).error.message, /unknown tool: read/);
         await send(8, "tools/call", { name: "jobs" });
         assert.match(answers.at(-1).error.message, /unknown tool: jobs/);
+    } finally {
+        await s.stop();
+    }
+});
+
+test("MCP selects named source and executes a pinned checkout without pushing", async () => {
+    const requests = [],
+        answers = [];
+    const s = await server(async (req, res) => {
+        const r = JSON.parse(await body(req));
+        requests.push(r);
+        reply(res, { jsonrpc: "2.0", id: r.id, result: { isError: false, content: [] } });
+    });
+    try {
+        const proxy = (checkout) =>
+            new Proxy(
+                { server: s.url, workspace: "", token: "t" },
+                checkout,
+                "",
+                (answer) => answers.push(answer),
+                () => {},
+                async () => {
+                    throw new Error("Selected source must not push local files");
+                },
+            );
+        const current = proxy(binding),
+            fixed = proxy({ ...binding, version: "fixed-version" });
+        const invoke = async (client, name, args = {}) => {
+            await client.line(
+                JSON.stringify({
+                    jsonrpc: "2.0",
+                    id: answers.length + 1,
+                    method: "tools/call",
+                    params: { name, arguments: args },
+                }),
+            );
+            assert.equal(answers.at(-1).result?.isError, false);
+            assert.deepEqual(answers.at(-1).result.content, []);
+            assert.equal(requests.at(-1).params._meta["fughetta/client_sync_seconds"], undefined);
+        };
+        await invoke(current, "build", { version: "@reviewed" });
+        await invoke(current, "test", { version: "@reviewed" });
+        await invoke(fixed, "configurations");
+        for (const name of ["build", "test", "run", "language"]) await invoke(fixed, name);
+        await invoke(fixed, "build", { version: "@other" });
+        assert.deepEqual(
+            requests.map((r) => r.params.arguments),
+            [
+                { project: "demo", worldline: "main", version: "@reviewed" },
+                { project: "demo", worldline: "main", version: "@reviewed" },
+                { project: "demo" },
+                ...Array.from({ length: 4 }, () => ({
+                    project: "demo",
+                    worldline: "main",
+                    version: "fixed-version",
+                })),
+                { project: "demo", worldline: "main", version: "@other" },
+            ],
+        );
     } finally {
         await s.stop();
     }
@@ -868,6 +928,36 @@ test("execute syncs, injects the binding, streams progress and reports results",
             ),
         );
         assert.ok(lines.some((line) => line.includes("build succeeded: 1/1 configuration")));
+        const fixed = await execute(
+            { server: s.url, workspace: "", token: "t" },
+            binding,
+            root,
+            "build",
+            { configurations: ["debug"], version: "@reviewed" },
+            () => {},
+            async () => {
+                throw new Error("A named version must not synchronize local changes");
+            },
+        );
+        assert.equal(fixed.ok, true);
+        assert.equal(requests.length, 2);
+        assert.equal(requests[1].params.arguments.version, "@reviewed");
+        assert.equal(requests[1].params._meta["fughetta/client_sync_seconds"], undefined);
+        const pinned = await execute(
+            { server: s.url, workspace: "", token: "t" },
+            { ...binding, version: "fixed-version" },
+            root,
+            "test",
+            { configurations: ["debug"] },
+            () => {},
+            async () => {
+                throw new Error("A pinned checkout must not synchronize local changes");
+            },
+        );
+        assert.equal(pinned.ok, true);
+        assert.equal(requests.length, 3);
+        assert.equal(requests[2].params.arguments.version, "fixed-version");
+        assert.equal(requests[2].params._meta["fughetta/client_sync_seconds"], undefined);
     } finally {
         await s.stop();
         await rm(root, { recursive: true, force: true });

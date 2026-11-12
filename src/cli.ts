@@ -26,7 +26,10 @@ const usage = `Usage: fug init [--server URL] [--workspace NAME] [--name PROJECT
        fug resolve [--json]
        fug clean [--json]
        fug mcp
-       fug worldline list | fork NAME | checkout NAME NEW_DIRECTORY
+       fug worldline list | fork NAME | checkout NAME NEW_DIRECTORY [--version @TAG]
+       fug worldline tag NAME --version VERSION --operation-id ID [--intent TEXT] [--attestations FILE]
+       fug worldline channel NAME --version VERSION --operation-id ID [--expected RECEIPT]
+       fug worldline references | reference-history | receipt OPERATION_ID
        fug worldline diff SOURCE [--version VERSION] [--observed VERSION]
        fug worldline promote SOURCE --operation-id ID [--version VERSION] [--observed VERSION] [--intent TEXT]
        fug d-mail send --to RECIPIENT --file TEXT_FILE [--operation-id ID]
@@ -39,6 +42,7 @@ init    create or use a project, send files and register Fughetta in .mcp.json;
 login   sign in and save the origin's token
 push    send this directory's changes
 status  show the binding, local cache use and files pending recovery
+--version VERSION on build/test/run selects fixed server source (also accepts @TAG).
 build   send this directory and build it on the workspace's workers
 test    send this directory and run the configurations' tests
 run     send this directory and invoke a saved run configuration
@@ -199,6 +203,13 @@ function executionArgs(cmd: string, args: string[]): Record<string, unknown> {
         const item = args[i]!;
         if (!item.startsWith("--")) {
             names.push(item);
+            continue;
+        }
+        if (item === "--version") {
+            const value = args[++i];
+            if (!value || value.startsWith("--") || out.version !== undefined)
+                throw new Refused("invalid_params", "Supply --version once with a version or @tag");
+            out.version = value;
             continue;
         }
         if (item === "--fresh" && cmd === "build") {
