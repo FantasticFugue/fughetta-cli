@@ -8,6 +8,7 @@ import { worldline } from '../worldline.js';
 import { stateDir, type Binding } from './binding.js';
 import { digestOf, scan, type Snapshot } from './scan.js';
 import { Rules } from './ignore.js';
+import { prefetch } from './concurrent.js';
 
 export interface Pushed {
   version: string;
@@ -300,8 +301,11 @@ async function open(core: Connection, binding: Binding, root: string, local: Sna
     throw new Error('This directory has an obsolete sync ledger; preserve it and use fug worldline checkout in a new directory');
   const remote = await tree(core, binding);
   const state: State = { binding, version: remote.version, files: Object.create(null) };
-  for (const file of remote.files) if (local.files.has(file.path) && await allowed(root, file.path))
-    state.files[file.path] = { version: remote.version, file: await remoteFile(core, binding, remote.version, file.path, file) };
+  for await (const { item: file, value } of prefetch(remote.files, async file =>
+    local.files.has(file.path) && await allowed(root, file.path)
+      ? remoteFile(core, binding, remote.version, file.path, file) : undefined)) {
+    if (value) state.files[file.path] = { version: remote.version, file: value };
+  }
   const ledger = new Ledger(path, state, core);
   await ledger.save();
   return ledger;
@@ -517,7 +521,13 @@ async function send(core: Connection, binding: Binding, root: string): Promise<P
     }
   }
   const present = new Set(remote.files.map(f => f.path));
-  for (const file of remote.files) {
+  for await (const { item: file, value: fetched } of prefetch(remote.files, async file => {
+    core.signal?.throwIfAborted();
+    if (file.size > limit || shadowed(current.skipped, file.path)) return;
+    const stored = ledger.state.files[file.path]?.file;
+    if (stored?.digest === file.digest || await unavailable(root, file.path)) return;
+    return remoteFile(core, binding, remote.version, file.path, file);
+  })) {
     core.signal?.throwIfAborted();
     if (file.size > limit || shadowed(current.skipped, file.path)) continue;
     const baseline = ledger.state.files[file.path]?.file;
@@ -531,7 +541,7 @@ async function send(core: Connection, binding: Binding, root: string): Promise<P
       if (unavailablePath === 'blocked') out.deferred!.push(file.path);
       continue;
     }
-    const content = baseline?.digest === file.digest ? { ...baseline, executable: file.executable } : await remoteFile(core, binding, remote.version, file.path, file);
+    const content = baseline?.digest === file.digest ? { ...baseline, executable: file.executable } : fetched ?? await remoteFile(core, binding, remote.version, file.path, file);
     const wrote = await writeback(root, ledger, file.path, local.get(file.path), content, remote.version);
     if (!wrote) { out.skipped.push(`${file.path} (changed locally during synchronization)`); out.deferred!.push(file.path); }
     else {

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { json, save } from '../files.js';
 import { stateDir } from './binding.js';
 import { Rules } from './ignore.js';
+import { prefetch } from './concurrent.js';
 
 export interface File {
   digest: string;
@@ -61,29 +62,26 @@ export async function scan(root: string, limit: number, signal?: AbortSignal): P
     signal?.throwIfAborted();
     const rules = await parent.enter(dir, relative);
     const names = (await readdir(dir)).sort();
-    for (const name of names) {
+    const directories: { full: string; path: string }[] = [];
+    for await (const { value } of prefetch(names, async (name) => {
       signal?.throwIfAborted();
       const path = relative ? `${relative}/${name}` : name;
       const full = join(dir, name);
       const status = await lstat(full, { bigint: true });
       const directory = status.isDirectory();
-      if (rules.ignored(path, directory)) continue;
+      if (rules.ignored(path, directory)) return;
       const refused = refusal(path);
       if (refused) {
-        out.skipped.set(path, refused);
-        continue;
+        return { path, skipped: refused };
       }
       if (directory) {
-        await walk(full, path, rules);
-        continue;
+        return { path, directory: full };
       }
       if (!status.isFile()) {
-        out.skipped.set(path, status.isSymbolicLink() ? 'a link' : 'not a regular file');
-        continue;
+        return { path, skipped: status.isSymbolicLink() ? 'a link' : 'not a regular file' };
       }
       if (status.size > BigInt(limit)) {
-        out.skipped.set(path, `${status.size} bytes, over the ${limit} byte limit`);
-        continue;
+        return { path, skipped: `${status.size} bytes, over the ${limit} byte limit` };
       }
       const stamp = `${status.mtimeNs}:${status.ctimeNs}:${status.ino}:${status.size}`;
       const known = index[path];
@@ -94,10 +92,20 @@ export async function scan(root: string, limit: number, signal?: AbortSignal): P
         file = { digest: digestOf(bytes), size: bytes.length, text: textual(bytes) };
       }
       if (posix) file.executable = (Number(status.mode) & 0o100) !== 0;
-      out.files.set(path, file);
+
       // A file written in the last two seconds may change again within the clock's resolution; it is hashed again next time.
-      if (now - status.mtimeNs > 2_000_000_000n && now - status.ctimeNs > 2_000_000_000n) next[path] = { stamp, file };
+      const indexed = now - status.mtimeNs > 2_000_000_000n && now - status.ctimeNs > 2_000_000_000n;
+      return { path, file, stamp, indexed };
+    })) {
+      if (!value) continue;
+      if (value.skipped) out.skipped.set(value.path, value.skipped);
+      else if (value.directory) directories.push({ full: value.directory, path: value.path });
+      else if (value.file) {
+        out.files.set(value.path, value.file);
+        if (value.indexed) next[value.path] = { stamp: value.stamp!, file: value.file };
+      }
     }
+    for (const directory of directories) await walk(directory.full, directory.path, rules);
   };
   await walk(root, '', Rules.root());
   await save(indexFile, next, 0o644);
